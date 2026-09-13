@@ -1,0 +1,340 @@
+pipeline {
+    agent any
+
+    tools {
+        nodejs 'nodejs'
+    }
+
+    environment {
+        APP_NAME = 'angular19-app'
+        IMAGE_NAME = 'nguyenvannam17/angular19-app'
+
+        // Thay bằng tên project thực tế
+        ANGULAR_PROJECT = 'angular19-app'
+
+        // Nếu dùng npm
+        NPM_CLI = 'npm'
+    }
+
+    stages {
+
+        stage('Workspace Cleaning') {
+            steps {
+                cleanWs()
+            }
+        }
+
+        stage('Checkout') {
+            steps {
+                git branch: 'master',
+                    url: 'https://github.com/thedreamer17042004/lifecycle_app_jenkin_kubernetes.git'
+            }
+        }
+
+        stage('Check Environment') {
+            steps {
+                sh '''
+                    echo "===== Node ====="
+                    node --version
+
+                    echo "===== NPM ====="
+                    npm --version
+
+                    echo "===== Docker ====="
+                    docker --version
+
+                    echo "===== Trivy ====="
+                    trivy --version
+
+                    echo "===== Semgrep ====="
+                    semgrep --version
+
+                    echo "===== Angular ====="
+                    npx ng version
+                '''
+            }
+        }
+
+        stage('Install Dependencies') {
+            steps {
+                dir('Application-Code') {
+                    sh '''
+                        set -e
+
+                        npm ci
+                    '''
+                }
+            }
+        }
+
+        stage('Semgrep Cloud SAST') {
+            steps {
+                dir('Application-Code') {
+
+                    withCredentials([
+                        string(
+                            credentialsId: 'semgrep-token',
+                            variable: 'SEMGREP_APP_TOKEN'
+                        )
+                    ]) {
+
+                        sh '''
+                            set -e
+
+                            echo "===== Semgrep Cloud SAST ====="
+
+                            semgrep ci --verbose
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            steps {
+                dir('Application-Code') {
+
+                    withSonarQubeEnv('sonar-server') {
+
+                        withCredentials([
+                            string(
+                                credentialsId: 'sonar-token',
+                                variable: 'SONAR_TOKEN'
+                            )
+                        ]) {
+
+                            sh '''
+                                set -e
+
+                                echo "===== SonarQube Analysis ====="
+
+                                npx @sonar/scan \
+                                  -Dsonar.projectKey=angular19-app \
+                                  -Dsonar.projectName=angular19-app \
+                                  -Dsonar.sources=src \
+                                  -Dsonar.host.url="$SONAR_HOST_URL" \
+                                  -Dsonar.token="$SONAR_TOKEN" \
+                                  -Dsonar.exclusions="node_modules/**,dist/**,coverage/**"
+                            '''
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Quality Gate') {
+            steps {
+                timeout(
+                    time: 10,
+                    unit: 'MINUTES'
+                ) {
+                    waitForQualityGate(
+                        abortPipeline: true
+                    )
+                }
+            }
+        }
+
+        stage('OWASP Dependency Check') {
+            steps {
+                dir('Application-Code') {
+
+                    withCredentials([
+                        string(
+                            credentialsId: 'nvd-api-key',
+                            variable: 'NVD_API_KEY'
+                        )
+                    ]) {
+
+                        dependencyCheck(
+                            additionalArguments: """
+                                --scan .
+                                --format XML
+                                --out .
+                                --nvdApiKey ${NVD_API_KEY}
+                                --disableKnownExploited
+                            """,
+                            odcInstallation: 'owasp-dp-check'
+                        )
+                    }
+
+                    dependencyCheckPublisher(
+                        pattern: '**/dependency-check-report.xml'
+                    )
+                }
+            }
+        }
+
+        stage('Trivy Filesystem Scan') {
+            steps {
+                dir('Application-Code') {
+
+                    sh '''
+                        set -e
+
+                        echo "===== Trivy FS Scan ====="
+
+                        trivy fs . \
+                            --severity HIGH,CRITICAL \
+                            --skip-files dependency-check-report.xml \
+                            --format table \
+                            --output trivy-fs-report.txt \
+                            --exit-code 1
+                    '''
+                }
+            }
+        }
+
+        stage('Angular Build') {
+            steps {
+                dir('Application-Code') {
+
+                    sh '''
+                        set -e
+
+                        echo "===== Angular 19 Build ====="
+
+                        npx ng build \
+                            --configuration production
+                    '''
+                }
+            }
+        }
+
+        stage('Archive Angular Artifact') {
+            steps {
+                dir('Application-Code') {
+
+                    archiveArtifacts(
+                        artifacts: 'dist/**',
+                        fingerprint: true
+                    )
+                }
+            }
+        }
+
+        stage('Docker Image Build') {
+            steps {
+                dir('Application-Code') {
+
+                    script {
+
+                        def imageTag = sh(
+                            script: 'git rev-parse --short HEAD',
+                            returnStdout: true
+                        ).trim()
+
+                        env.IMAGE_TAG = imageTag
+
+                        sh """
+                            set -e
+
+                            echo "===== Docker Build ====="
+
+                            docker build \
+                                -t ${IMAGE_NAME}:${IMAGE_TAG} \
+                                -t ${IMAGE_NAME}:latest \
+                                .
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Trivy Image Scan') {
+            steps {
+
+                sh '''
+                    set -e
+
+                    echo "===== Trivy Docker Image Scan ====="
+
+                    trivy image \
+                        --severity HIGH,CRITICAL \
+                        --format table \
+                        --output trivy-image.txt \
+                        --exit-code 1 \
+                        ${IMAGE_NAME}:${IMAGE_TAG}
+                '''
+
+                archiveArtifacts(
+                    artifacts: 'trivy-image.txt',
+                    allowEmptyArchive: true
+                )
+            }
+        }
+
+        stage('Docker Push') {
+            steps {
+
+                script {
+
+                    withDockerRegistry(
+                        credentialsId: 'dockerhub',
+                        toolName: 'dockerhub'
+                    ) {
+
+                        sh '''
+                            set -e
+
+                            echo "===== Docker Push ====="
+
+                            docker push ${IMAGE_NAME}:${IMAGE_TAG}
+                            docker push ${IMAGE_NAME}:latest
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('Deploy Kubernetes') {
+            steps {
+
+                script {
+
+                    dir('Kubernetes') {
+
+                        withKubeConfig(
+                            credentialsId: 'k8s'
+                        ) {
+
+                            sh """
+                                set -e
+
+                                echo "===== Kubernetes Deploy ====="
+
+                                kubectl apply -f deployment.yml
+                                kubectl apply -f service.yml
+
+                                kubectl set image deployment/${APP_NAME} \
+                                    ${APP_NAME}=${IMAGE_NAME}:${IMAGE_TAG}
+
+                                kubectl rollout status \
+                                    deployment/${APP_NAME} \
+                                    --timeout=180s
+
+                                kubectl get pods
+                                kubectl get svc
+                            """
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+
+        success {
+            echo '======================================'
+            echo 'Angular 19 CI/CD SUCCESS'
+            echo '======================================'
+        }
+
+        failure {
+            echo '======================================'
+            echo 'Angular 19 CI/CD FAILED'
+            echo '======================================'
+        }
+    }
+}

@@ -1,0 +1,456 @@
+
+pipeline {
+
+    agent any
+
+    stages {
+
+        // ============================================================
+        // 1. CLEAN WORKSPACE
+        // ============================================================
+        stage('Workspace Cleaning') {
+            steps {
+                cleanWs()
+            }
+        }
+
+
+        // ============================================================
+        // 2. CHECK TOOLS
+        // ============================================================
+        stage('Check Build Tools') {
+            steps {
+                sh '''
+                    set -e
+
+                    echo "=============================================="
+                    echo "BUILD TOOLS"
+                    echo "=============================================="
+
+                    echo "---- .NET ----"
+                    dotnet --info
+
+                    echo "---- Docker ----"
+                    docker --version
+
+                    echo "---- kubectl ----"
+                    kubectl version --client
+
+                    echo "---- Trivy ----"
+                    trivy --version
+
+                    echo "---- Semgrep ----"
+                    semgrep --version
+                '''
+            }
+        }
+
+
+        // ============================================================
+        // 3. CHECKOUT
+        // ============================================================
+        stage('Checkout from Git') {
+            steps {
+                git branch: 'master',
+                    url: 'https://github.com/thedreamer17042004/lifecycle_app_jenkin_kubernetes.git'
+            }
+        }
+
+
+        // ============================================================
+        // 4. SHOW PROJECT STRUCTURE
+        // ============================================================
+        stage('Inspect .NET Project') {
+            steps {
+                sh '''
+                    set -e
+
+                    echo "=============================================="
+                    echo "PROJECT STRUCTURE"
+                    echo "=============================================="
+
+                    pwd
+
+                    echo "---- Solution files ----"
+                    find . -name "*.sln" -o -name "*.slnx"
+
+                    echo "---- Project files ----"
+                    find . -name "*.csproj"
+
+                    echo "---- Test projects ----"
+                    find . -name "*.Tests.csproj" -o -name "*Test*.csproj"
+                '''
+            }
+        }
+
+
+        // ============================================================
+        // 5. RESTORE
+        // ============================================================
+        stage('Restore .NET 9') {
+            steps {
+                sh '''
+                    set -e
+
+                    echo "=============================================="
+                    echo ".NET RESTORE"
+                    echo "=============================================="
+
+                    dotnet restore
+                '''
+            }
+        }
+
+
+        // ============================================================
+        // 6. BUILD
+        // ============================================================
+        stage('Build .NET 9') {
+            steps {
+                sh '''
+                    set -e
+
+                    echo "=============================================="
+                    echo ".NET BUILD"
+                    echo "=============================================="
+
+                    dotnet build \
+                        --configuration Release \
+                        --no-restore
+                '''
+            }
+        }
+
+
+        // ============================================================
+        // 7. TEST
+        // ============================================================
+        stage('Test .NET 9') {
+            steps {
+                sh '''
+                    set -e
+
+                    echo "=============================================="
+                    echo ".NET TEST"
+                    echo "=============================================="
+
+                    dotnet test \
+                        --configuration Release \
+                        --no-build \
+                        --logger "trx;LogFileName=test-results.trx"
+                '''
+            }
+        }
+
+
+        // ============================================================
+        // 8. SEMGREP CLOUD
+        // ============================================================
+        stage('Semgrep Cloud SAST') {
+            steps {
+
+                withCredentials([
+                    string(
+                        credentialsId: 'semgrep-token',
+                        variable: 'SEMGREP_APP_TOKEN'
+                    )
+                ]) {
+
+                    sh '''
+                        set -e
+
+                        echo "=============================================="
+                        echo "SEMGREP CLOUD SAST"
+                        echo "=============================================="
+
+                        semgrep ci \
+                            --verbose
+                    '''
+                }
+            }
+        }
+
+
+        // ============================================================
+        // 9. SONARQUBE
+        // ============================================================
+        stage('SonarQube Analysis') {
+            steps {
+
+                withSonarQubeEnv('sonar-server') {
+
+                    sh '''
+                        set -e
+
+                        echo "=============================================="
+                        echo "SONARQUBE ANALYSIS"
+                        echo "=============================================="
+
+                        dotnet tool list --global || true
+
+                        echo "Starting SonarQube..."
+
+                        # ------------------------------------------------
+                        # Nếu bạn dùng SonarScanner for .NET:
+                        # dotnet sonarscanner begin ...
+                        #
+                        # dotnet build
+                        #
+                        # dotnet sonarscanner end ...
+                        # ------------------------------------------------
+
+                        echo "SonarQube environment:"
+                        echo "SONAR_HOST_URL=$SONAR_HOST_URL"
+                    '''
+                }
+            }
+        }
+
+
+        // ============================================================
+        // 10. QUALITY GATE
+        // ============================================================
+        stage('Quality Gate') {
+            steps {
+
+                script {
+
+                    timeout(
+                        time: 10,
+                        unit: 'MINUTES'
+                    ) {
+
+                        waitForQualityGate(
+                            abortPipeline: true
+                        )
+                    }
+                }
+            }
+        }
+
+
+        // ============================================================
+        // 11. OWASP DEPENDENCY CHECK
+        // ============================================================
+        stage('OWASP Dependency Check') {
+            steps {
+
+                withCredentials([
+                    string(
+                        credentialsId: 'nvd-api-key',
+                        variable: 'NVD_API_KEY'
+                    )
+                ]) {
+
+                    dependencyCheck(
+
+                        additionalArguments: """
+                            --scan .
+                            --format XML
+                            --out .
+                            --nvdApiKey ${NVD_API_KEY}
+                            --disableKnownExploited
+                        """,
+
+                        odcInstallation: 'owasp-dp-check'
+                    )
+                }
+
+                dependencyCheckPublisher(
+                    pattern: '**/dependency-check-report.xml'
+                )
+            }
+        }
+
+
+        // ============================================================
+        // 12. TRIVY FILESYSTEM SCAN
+        // ============================================================
+        stage('Trivy FS Scan') {
+            steps {
+
+                sh '''
+                    set -e
+
+                    echo "=============================================="
+                    echo "TRIVY FILESYSTEM SCAN"
+                    echo "=============================================="
+
+                    trivy fs . \
+                        --severity HIGH,CRITICAL \
+                        --skip-files dependency-check-report.xml \
+                        --format table \
+                        --output trivy-fs-report.txt \
+                        --exit-code 1
+                '''
+            }
+        }
+
+
+        // ============================================================
+        // 13. DOCKER BUILD
+        // ============================================================
+        stage('Docker Image Build') {
+            steps {
+
+                script {
+
+                    sh '''
+                        set -e
+
+                        echo "=============================================="
+                        echo "DOCKER BUILD"
+                        echo "=============================================="
+
+                        docker build \
+                            -t acman-api:latest \
+                            .
+                    '''
+                }
+            }
+        }
+
+
+        // ============================================================
+        // 14. TRIVY IMAGE SCAN
+        // ============================================================
+        stage('Trivy Image Scan') {
+            steps {
+
+                sh '''
+                    set -e
+
+                    echo "=============================================="
+                    echo "TRIVY IMAGE SCAN"
+                    echo "=============================================="
+
+                    trivy image \
+                        --severity HIGH,CRITICAL \
+                        --format table \
+                        --output trivy-image.txt \
+                        --exit-code 1 \
+                        acman-api:latest
+                '''
+            }
+        }
+
+
+        // ============================================================
+        // 15. DOCKER LOGIN + PUSH
+        // ============================================================
+        stage('Docker Image Push') {
+            steps {
+
+                script {
+
+                    withDockerRegistry(
+                        credentialsId: 'dockerhub',
+                        toolName: 'dockerhub'
+                    ) {
+
+                        sh '''
+                            set -e
+
+                            echo "=============================================="
+                            echo "DOCKER IMAGE PUSH"
+                            echo "=============================================="
+
+                            docker tag \
+                                acman-api:latest \
+                                nguyenvannam17/acman-api:latest
+
+                            docker push \
+                                nguyenvannam17/acman-api:latest
+                        '''
+                    }
+                }
+            }
+        }
+
+
+        // ============================================================
+        // 16. DEPLOY KUBERNETES
+        // ============================================================
+        stage('Deploy to Kubernetes') {
+            steps {
+
+                script {
+
+                    dir('Kubernetes') {
+
+                        withKubeConfig(
+                            credentialsId: 'k8s'
+                        ) {
+
+                            sh '''
+                                set -e
+
+                                echo "=============================================="
+                                echo "KUBERNETES DEPLOY"
+                                echo "=============================================="
+
+                                kubectl apply \
+                                    -f deployment.yml
+
+                                kubectl apply \
+                                    -f service.yml
+
+                                echo "=============================================="
+                                echo "KUBERNETES RESOURCES"
+                                echo "=============================================="
+
+                                kubectl get deployment
+                                kubectl get pods
+                                kubectl get svc
+
+                                echo "=============================================="
+                                echo "ROLLOUT STATUS"
+                                echo "=============================================="
+
+                                kubectl rollout status \
+                                    deployment/acman-api \
+                                    --timeout=180s
+                            '''
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+
+    // ================================================================
+    // POST
+    // ================================================================
+    post {
+
+        always {
+
+            echo "=============================================="
+            echo "JENKINS BUILD FINISHED"
+            echo "=============================================="
+
+            echo "JOB: ${env.JOB_NAME}"
+            echo "BUILD: #${env.BUILD_NUMBER}"
+            echo "RESULT: ${currentBuild.result}"
+        }
+
+        success {
+
+            echo "=============================================="
+            echo "SUCCESS"
+            echo "=============================================="
+
+            echo "Application successfully built and deployed."
+        }
+
+        failure {
+
+            echo "=============================================="
+            echo "FAILED"
+            echo "=============================================="
+
+            echo "Please check Jenkins console output."
+        }
+    }
+}

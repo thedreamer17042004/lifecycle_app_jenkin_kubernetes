@@ -22,6 +22,26 @@ RUN apt-get update && \
 
 
 # ==========================================
+# .NET 9 SDK
+# ==========================================
+ARG DOTNET_VERSION=9.0
+
+RUN wget https://dot.net/v1/dotnet-install.sh \
+        -O /tmp/dotnet-install.sh && \
+    chmod +x /tmp/dotnet-install.sh && \
+    /tmp/dotnet-install.sh \
+        --channel ${DOTNET_VERSION} \
+        --install-dir /usr/share/dotnet \
+        --no-path && \
+    ln -sf /usr/share/dotnet/dotnet /usr/local/bin/dotnet && \
+    chown -R jenkins:jenkins /usr/share/dotnet && \
+    rm -f /tmp/dotnet-install.sh
+
+ENV DOTNET_ROOT=/usr/share/dotnet
+ENV PATH="${DOTNET_ROOT}:${PATH}"
+
+
+# ==========================================
 # Docker CLI
 # ==========================================
 RUN install -m 0755 -d /etc/apt/keyrings && \
@@ -78,7 +98,7 @@ RUN python3 -m venv /opt/semgrep && \
 # ==========================================
 # Terraform CLI
 # ==========================================
-ARG TERRAFORM_VERSION=1.13.1
+ARG TERRAFORM_VERSION=1.13.3
 
 RUN curl -fsSL \
       "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip" \
@@ -106,7 +126,9 @@ RUN mkdir -p /home/jenkins/workspace && \
 # ==========================================
 # Verify tools as Jenkins user
 # ==========================================
-RUN su -s /bin/bash jenkins -c "docker --version" && \
+RUN su -s /bin/bash jenkins -c "dotnet --version" && \
+    su -s /bin/bash jenkins -c "dotnet --info" && \
+    su -s /bin/bash jenkins -c "docker --version" && \
     su -s /bin/bash jenkins -c "trivy --version" && \
     su -s /bin/bash jenkins -c "kubectl version --client" && \
     su -s /bin/bash jenkins -c "semgrep --version" && \

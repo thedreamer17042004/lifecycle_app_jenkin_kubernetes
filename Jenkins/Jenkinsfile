@@ -4,7 +4,117 @@ pipeline{
         nodejs 'nodejs'
     }
     stages {
-         stage('Workspace Cleaning'){
+        //production sẽ phải cần dev thì thôi sẽ bị lỗi resolve hostname floci
+        // stage('Provision Infrastructure with FloCI + Terraform') {
+        //     steps {
+        //         sh '''
+        //             set -e
+
+        //             echo "=============================================="
+        //             echo "1. Check Docker"
+        //             echo "=============================================="
+
+        //             docker --version
+
+        //             echo "=============================================="
+        //             echo "2. Check FloCI"
+        //             echo "=============================================="
+
+        //             if docker ps -a --format '{{.Names}}' | grep -qx 'floci'; then
+
+        //                 echo "FloCI container already exists."
+
+        //                 if [ "$(docker inspect -f '{{.State.Running}}' floci)" != "true" ]; then
+        //                     echo "Starting existing FloCI container..."
+        //                     docker start floci
+        //                 else
+        //                     echo "FloCI is already running."
+        //                 fi
+
+        //             else
+
+        //                 echo "FloCI does not exist."
+        //                 echo "Pulling FloCI image..."
+
+        //                 docker pull floci/floci:latest
+
+        //                 echo "Creating FloCI container..."
+
+        //                 docker run -d \
+        //                     --name floci \
+        //                     --restart unless-stopped \
+        //                     -p 4566:4566 \
+        //                     -p 32000:32000 \
+        //                     -v floci-data:/app/data \
+        //                     -v /var/run/docker.sock:/var/run/docker.sock \
+        //                     -e FLOCI_DEFAULT_REGION=us-east-1 \
+        //                     -e FLOCI_SERVICES_EKS_ENABLED=true \
+        //                     -e FLOCI_SERVICES_EKS_MOCK=false \
+        //                     -e FLOCI_SERVICES_EKS_PROVIDER=k3s \
+        //                     floci/floci:latest
+
+        //             fi
+
+        //             echo "=============================================="
+        //             echo "3. Wait for FloCI"
+        //             echo "=============================================="
+
+        //             for i in $(seq 1 30); do
+
+        //                 if curl -fsS http://127.0.0.1:4566/health >/dev/null 2>&1; then
+        //                     echo "FloCI is ready."
+        //                     break
+        //                 fi
+
+        //                 echo "Waiting for FloCI... ($i/30)"
+        //                 sleep 2
+
+        //             done
+
+        //             echo "=============================================="
+        //             echo "4. Check FloCI container"
+        //             echo "=============================================="
+
+        //             docker ps --filter "name=floci"
+
+        //             echo "=============================================="
+        //             echo "5. Terraform Init"
+        //             echo "=============================================="
+
+        //             cd terraform_dev
+
+        //             terraform init
+
+        //             echo "=============================================="
+        //             echo "6. Terraform Validate"
+        //             echo "=============================================="
+
+        //             terraform validate
+
+        //             echo "=============================================="
+        //             echo "7. Terraform Plan"
+        //             echo "=============================================="
+
+        //             terraform plan \
+        //                 -input=false \
+        //                 -out=tfplan
+
+        //             echo "=============================================="
+        //             echo "8. Terraform Apply"
+        //             echo "=============================================="
+
+        //             terraform apply \
+        //                 -input=false \
+        //                 -auto-approve \
+        //                 tfplan
+
+        //             echo "=============================================="
+        //             echo "Infrastructure provisioning completed."
+        //             echo "=============================================="
+        //         '''
+        //     }
+        // }
+        stage('Workspace Cleaning'){
             steps{
                 cleanWs()
             }
@@ -12,115 +122,6 @@ pipeline{
         stage('Checkout from Git'){
             steps{
                 git branch: 'master', url: 'https://github.com/thedreamer17042004/lifecycle_app_jenkin_kubernetes.git'
-            }
-        }
-        stage('Provision Infrastructure with FloCI + Terraform') {
-            steps {
-                sh '''
-                    set -e
-
-                    echo "=============================================="
-                    echo "1. Check Docker"
-                    echo "=============================================="
-
-                    docker --version
-
-                    echo "=============================================="
-                    echo "2. Check FloCI"
-                    echo "=============================================="
-
-                    if docker ps -a --format '{{.Names}}' | grep -qx 'floci'; then
-
-                        echo "FloCI container already exists."
-
-                        if [ "$(docker inspect -f '{{.State.Running}}' floci)" != "true" ]; then
-                            echo "Starting existing FloCI container..."
-                            docker start floci
-                        else
-                            echo "FloCI is already running."
-                        fi
-
-                    else
-
-                        echo "FloCI does not exist."
-                        echo "Pulling FloCI image..."
-
-                        docker pull floci/floci:latest
-
-                        echo "Creating FloCI container..."
-
-                        docker run -d \
-                            --name floci \
-                            --restart unless-stopped \
-                            -p 4566:4566 \
-                            -p 32000:32000 \
-                            -v floci-data:/app/data \
-                            -v /var/run/docker.sock:/var/run/docker.sock \
-                            -e FLOCI_DEFAULT_REGION=us-east-1 \
-                            -e FLOCI_SERVICES_EKS_ENABLED=true \
-                            -e FLOCI_SERVICES_EKS_MOCK=false \
-                            -e FLOCI_SERVICES_EKS_PROVIDER=k3s \
-                            floci/floci:latest
-
-                    fi
-
-                    echo "=============================================="
-                    echo "3. Wait for FloCI"
-                    echo "=============================================="
-
-                    for i in $(seq 1 30); do
-
-                        if curl -fsS http://127.0.0.1:4566/health >/dev/null 2>&1; then
-                            echo "FloCI is ready."
-                            break
-                        fi
-
-                        echo "Waiting for FloCI... ($i/30)"
-                        sleep 2
-
-                    done
-
-                    echo "=============================================="
-                    echo "4. Check FloCI container"
-                    echo "=============================================="
-
-                    docker ps --filter "name=floci"
-
-                    echo "=============================================="
-                    echo "5. Terraform Init"
-                    echo "=============================================="
-
-                    cd terraform_dev
-
-                    terraform init
-
-                    echo "=============================================="
-                    echo "6. Terraform Validate"
-                    echo "=============================================="
-
-                    terraform validate
-
-                    echo "=============================================="
-                    echo "7. Terraform Plan"
-                    echo "=============================================="
-
-                    terraform plan \
-                        -input=false \
-                        -out=tfplan
-
-                    echo "=============================================="
-                    echo "8. Terraform Apply"
-                    echo "=============================================="
-
-                    terraform apply \
-                        -input=false \
-                        -auto-approve \
-                        tfplan
-
-                    echo "=============================================="
-                    echo "Infrastructure provisioning completed."
-                    echo "=============================================="
-                '''
             }
         }
        
@@ -182,6 +183,7 @@ pipeline{
                     }
                 } 
             }
+      
         stage('OWASP Dependency Check') {
             steps {
                 dir('Application-Code') {
@@ -211,7 +213,7 @@ pipeline{
                 }
             }
         }
-       stage('TRIVY FS SCAN') {
+        stage('TRIVY FS SCAN') {
             steps {
                 dir('Application-Code') {
                     sh '''
