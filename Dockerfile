@@ -17,7 +17,8 @@ RUN apt-get update && \
         jq \
         python3 \
         python3-pip \
-        python3-venv && \
+        python3-venv \
+        libicu-dev && \
     rm -rf /var/lib/apt/lists/*
 
 
