@@ -4,10 +4,10 @@ FROM mcr.microsoft.com/dotnet/sdk:9.0 AS builder
 WORKDIR /src
 
 COPY crud-asp.net-core.csproj .
-RUN dotnet restore
+RUN dotnet restore crud-asp.net-core.csproj
 
 COPY . .
-RUN dotnet publish -c Release -o /app/publish --no-restore
+RUN dotnet publish crud-asp.net-core.csproj -c Release -o /app/publish --no-restore
 
 
 # ---------- Stage 2: Runtime ----------
