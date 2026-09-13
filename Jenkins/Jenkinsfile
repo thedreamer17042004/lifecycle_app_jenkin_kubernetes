@@ -3,10 +3,116 @@ pipeline{
     tools{
         nodejs 'nodejs'
     }
-    environment {
-        SCANNER_HOME=tool 'sonar-server'
-    }
     stages {
+        stage('Provision Infrastructure with FloCI + Terraform') {
+            steps {
+                sh '''
+                    set -e
+
+                    echo "=============================================="
+                    echo "1. Check Docker"
+                    echo "=============================================="
+
+                    docker --version
+
+                    echo "=============================================="
+                    echo "2. Check FloCI"
+                    echo "=============================================="
+
+                    if docker ps -a --format '{{.Names}}' | grep -qx 'floci'; then
+
+                        echo "FloCI container already exists."
+
+                        if [ "$(docker inspect -f '{{.State.Running}}' floci)" != "true" ]; then
+                            echo "Starting existing FloCI container..."
+                            docker start floci
+                        else
+                            echo "FloCI is already running."
+                        fi
+
+                    else
+
+                        echo "FloCI does not exist."
+                        echo "Pulling FloCI image..."
+
+                        docker pull floci/floci:latest
+
+                        echo "Creating FloCI container..."
+
+                        docker run -d \
+                            --name floci \
+                            --restart unless-stopped \
+                            -p 4566:4566 \
+                            -p 32000:32000 \
+                            -v floci-data:/app/data \
+                            -v /var/run/docker.sock:/var/run/docker.sock \
+                            -e FLOCI_DEFAULT_REGION=us-east-1 \
+                            -e FLOCI_SERVICES_EKS_ENABLED=true \
+                            -e FLOCI_SERVICES_EKS_MOCK=false \
+                            -e FLOCI_SERVICES_EKS_PROVIDER=k3s \
+                            floci/floci:latest
+
+                    fi
+
+                    echo "=============================================="
+                    echo "3. Wait for FloCI"
+                    echo "=============================================="
+
+                    for i in $(seq 1 30); do
+
+                        if curl -fsS http://127.0.0.1:4566/health >/dev/null 2>&1; then
+                            echo "FloCI is ready."
+                            break
+                        fi
+
+                        echo "Waiting for FloCI... ($i/30)"
+                        sleep 2
+
+                    done
+
+                    echo "=============================================="
+                    echo "4. Check FloCI container"
+                    echo "=============================================="
+
+                    docker ps --filter "name=floci"
+
+                    echo "=============================================="
+                    echo "5. Terraform Init"
+                    echo "=============================================="
+
+                    cd terraform_dev
+
+                    terraform init
+
+                    echo "=============================================="
+                    echo "6. Terraform Validate"
+                    echo "=============================================="
+
+                    terraform validate
+
+                    echo "=============================================="
+                    echo "7. Terraform Plan"
+                    echo "=============================================="
+
+                    terraform plan \
+                        -input=false \
+                        -out=tfplan
+
+                    echo "=============================================="
+                    echo "8. Terraform Apply"
+                    echo "=============================================="
+
+                    terraform apply \
+                        -input=false \
+                        -auto-approve \
+                        tfplan
+
+                    echo "=============================================="
+                    echo "Infrastructure provisioning completed."
+                    echo "=============================================="
+                '''
+            }
+        }
         stage('Workspace Cleaning'){
             steps{
                 cleanWs()
@@ -14,7 +120,7 @@ pipeline{
         }
         stage('Checkout from Git'){
             steps{
-                git branch: 'master', url: 'https://github.com/AmanPathak-DevOps/Netflix-Clone-K8S-End-to-End-Project.git'
+                git branch: 'master', url: 'https://github.com/thedreamer17042004/lifecycle_app_jenkin_kubernetes.git'
             }
         }
         stage('Install Dependencies') {
@@ -22,6 +128,29 @@ pipeline{
                 dir('Application-Code') {
                     // Install project dependencies (needed for OWASP + build)
                     sh 'npm install'
+                }
+            }
+        }
+        stage('Semgrep Cloud SAST') {
+            steps {
+                dir('Application-Code') {
+                    withCredentials([
+                        string(
+                            credentialsId: 'semgrep-token',
+                            variable: 'SEMGREP_APP_TOKEN'
+                        )
+                    ]) {
+                        sh '''
+                            set -e
+
+                            echo "======================================"
+                            echo "🔐 SEMGREP CLOUD SAST"
+                            echo "======================================"
+
+                            semgrep ci \
+                                --verbose
+                        '''
+                    }
                 }
             }
         }
@@ -56,33 +185,51 @@ pipeline{
             steps {
                 dir('Application-Code') {
                     echo "🔒 Running OWASP Dependency Check..."
-                    dependencyCheck additionalArguments: '--scan ./ --format XML --out .', odcInstallation: 'owasp-dp-check'
-                    dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
+
+                    withCredentials([
+                        string(
+                            credentialsId: 'nvd-api-key',
+                            variable: 'NVD_API_KEY'
+                        )
+                    ]) {
+                        dependencyCheck(
+                            additionalArguments: """
+                                --scan .
+                                --format XML
+                                --out .
+                                --nvdApiKey ${NVD_API_KEY}
+                                --disableKnownExploited
+                            """,
+                            odcInstallation: 'owasp-dp-check'
+                        )
+                    }
+
+                    dependencyCheckPublisher(
+                        pattern: '**/dependency-check-report.xml'
+                    )
                 }
             }
         }
-        stage('TRIVY FS SCAN') {
+       stage('TRIVY FS SCAN') {
             steps {
                 dir('Application-Code') {
-                    sh "trivy fs . > trivyfs.txt"
+                    sh '''
+                        trivy fs . \
+                            --severity HIGH,CRITICAL \
+                            --skip-files dependency-check-report.xml \
+                            --format table \
+                            --output trivy-fs-report.txt \
+                            --exit-code 0
+                    '''
                 }
             }
         }
         stage("Docker Image Build"){
             steps{
-                dir('Application-Code') {
-                    script{
-                       withDockerRegistry(credentialsId: 'docker', toolName: 'docker'){   
-                           
-                           withCredentials([string(credentialsId: 'tmdb-api', variable: 'TMDB_API_KEY')]) {
-                                sh """
-                                    docker build \
-                                    --build-arg TMDB_V3_API_KEY=${TMDB_API_KEY} \
-                                    -t netflix .
-                                """
-                            }
-                        }
-                    }
+                 dir('Application-Code') {
+                    sh '''
+                        docker build -t netflix:latest .
+                    '''
                 }
             }
         }
@@ -90,9 +237,9 @@ pipeline{
             steps{
                 dir('Application-Code') {
                     script{
-                       withDockerRegistry(credentialsId: 'docker', toolName: 'docker'){   
-                           sh "docker tag netflix avian19/netflix:latest "
-                           sh "docker push avian19/netflix:latest "
+                       withDockerRegistry(credentialsId: 'dockerhub', toolName: 'dockerhub'){   
+                           sh "docker tag netflix nguyenvannam17/netflix:latest "
+                           sh "docker push nguyenvannam17/netflix:latest "
                         }
                     }
                 }
@@ -100,7 +247,7 @@ pipeline{
         }
         stage("TRIVY Image Scan"){
             steps{
-                sh "trivy image avian19/netflix:latest > trivyimage.txt" 
+                sh "trivy image nguyenvannam17/netflix:latest > trivyimage.txt" 
             }
         }
         stage('Deploy to Kubernetes') {
