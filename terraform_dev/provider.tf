@@ -16,8 +16,8 @@ provider "aws" {
   secret_key = "test"
 
   endpoints {
-    eks = "http://localhost:4566"
-    iam = "http://localhost:4566"
+    eks = "http://floci:4566"//localhost sẽ bị lỗi khi chay trong jenkins
+    iam = "http://floci:4566"//localhost sẽ bị lỗi khi chay trong jenkins
   }
 
   skip_credentials_validation = true

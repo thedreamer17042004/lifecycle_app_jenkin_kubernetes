@@ -4,6 +4,16 @@ pipeline{
         nodejs 'nodejs'
     }
     stages {
+         stage('Workspace Cleaning'){
+            steps{
+                cleanWs()
+            }
+        }
+        stage('Checkout from Git'){
+            steps{
+                git branch: 'master', url: 'https://github.com/thedreamer17042004/lifecycle_app_jenkin_kubernetes.git'
+            }
+        }
         stage('Provision Infrastructure with FloCI + Terraform') {
             steps {
                 sh '''
@@ -113,16 +123,7 @@ pipeline{
                 '''
             }
         }
-        stage('Workspace Cleaning'){
-            steps{
-                cleanWs()
-            }
-        }
-        stage('Checkout from Git'){
-            steps{
-                git branch: 'master', url: 'https://github.com/thedreamer17042004/lifecycle_app_jenkin_kubernetes.git'
-            }
-        }
+       
         stage('Install Dependencies') {
             steps {
                 dir('Application-Code') {
